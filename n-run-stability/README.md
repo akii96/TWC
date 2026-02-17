@@ -1,6 +1,6 @@
-# N-Run Stability - SGLang Stress Test
+# Together We Check - N-Run Stability 
 
-Stress-tests an SGLang model serving inside Docker to catch hangs during CUDA graph build or decode. Runs multiple iterations of container launch → server startup → prompt requests to identify intermittent failures.
+For now the script supports Stress-testing an SGLang model serving inside Docker to catch hangs during CUDA graph build or decode. Runs multiple iterations of container launch → server startup → prompt requests to identify intermittent failures.
 
 ## Quick Start
 
@@ -11,11 +11,6 @@ export HF_TOKEN='hf_your_token_here'
 # Example
 ./stress_test_sglang.sh lmsysorg/sglang:v0.5.8-rocm700-mi30x 20
 ```
-
-## Prerequisites
-
-- Docker with GPU support (ROCm)
-- `HF_TOKEN` environment variable set (get one at https://huggingface.co/settings/tokens)
 
 ## What It Does
 
