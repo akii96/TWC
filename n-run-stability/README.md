@@ -19,20 +19,26 @@ pip3 install PyYAML
 ```bash
 export HF_TOKEN='hf_your_token_here'
 
-# Use default config (config.yaml)
-./stress_test.sh
-
-# Use a preset
+# Run with a preset (required)
 ./stress_test.sh --config presets/sglang-glm4-rocm.yaml
 
-# Override specific values
-./stress_test.sh --loops 50 --image my-custom:latest
+# Use server mode (keep container, restart server each iteration)
+./stress_test.sh --config presets/sglang-glm4-rocm.yaml --mode server
+
+# Override specific values from preset
+./stress_test.sh --config presets/sglang-glm4-rocm.yaml --loops 50
 
 # Environment variable overrides
-STRESS_LOOPS=10 STRESS_PORT=8080 ./stress_test.sh
+STRESS_LOOPS=10 ./stress_test.sh --config presets/sglang-glm4-rocm.yaml
 ```
 
+**Note:** A preset is required. If no `--config` is specified, the script will show available presets and exit.
+
 ## What It Does
+
+The stress test supports two modes:
+
+### Container Mode (default)
 
 For each iteration:
 
@@ -43,9 +49,44 @@ For each iteration:
 5. Scans logs for error patterns (HSA errors, CUDA errors, etc.)
 6. Tears down the container and records results
 
-## Configuration
+### Server Mode
 
-Each config file (or preset) is fully self-contained with all settings:
+Keeps the container running and only restarts the server process:
+
+1. Launches a persistent Docker container (once)
+2. For each iteration:
+   - Starts the server process inside the container
+   - Waits for the server to become ready
+   - Sends test prompts
+   - Stops the server process (container stays alive)
+3. Tears down the container at the end
+
+**When to use each mode:**
+
+| Mode | Use Case |
+|------|----------|
+| `container` | Thorough stability testing, catches container-level issues, memory leaks |
+| `server` | Faster iteration, testing server restart reliability, development testing |
+
+## Presets
+
+Presets are self-contained configuration files in `presets/`. Each preset includes all settings needed to run a stress test:
+
+| Preset | Description |
+|--------|-------------|
+| `sglang-glm4-rocm.yaml` | GLM-4.7-FP8 on AMD MI300X with SGLang |
+
+To create a new preset, copy an existing one and modify as needed:
+
+```bash
+cp presets/sglang-glm4-rocm.yaml presets/my-custom-preset.yaml
+# Edit presets/my-custom-preset.yaml
+./stress_test.sh --config presets/my-custom-preset.yaml
+```
+
+## Preset Structure
+
+Each preset is fully self-contained with all settings:
 
 ```yaml
 framework: sglang  # or "vllm"
@@ -79,6 +120,7 @@ timeouts:
   prompt: 120
 
 test:
+  mode: container  # or "server"
   num_loops: 20
   prompts_per_loop: 10
   success_pattern: "yes"
@@ -112,32 +154,93 @@ Configure test prompts and parameters:
 
 | Option | Description |
 |--------|-------------|
-| `--config FILE` | Path to config file (default: config.yaml) |
+| `--config FILE` | Path to preset file **(required)** |
 | `--loops N` | Override number of test loops |
 | `--image IMAGE` | Override Docker image |
 | `--port PORT` | Override server port |
 | `--framework NAME` | Override framework (sglang, vllm) |
+| `--mode MODE` | Test mode: `container` or `server` |
 | `--dry-run` | Show configuration without running tests |
 | `--help` | Show help message |
 
-## Environment Variable Overrides
+## Configuration Precedence
 
-Prefix any config option with `STRESS_` to override via environment:
+Settings are applied in this order (later overrides earlier):
 
-```bash
-STRESS_LOOPS=50 STRESS_IMAGE=my-image:latest ./stress_test.sh
+```
+1. Preset/Config file (lowest priority)
+      ↓
+2. STRESS_* environment variables
+      ↓
+3. CLI arguments (highest priority)
 ```
 
-## Presets
+### Example: CLI Overrides Preset
 
-Ready-to-use configurations in `presets/`:
+```bash
+# Preset has num_loops: 20, but CLI overrides it to 5
+./stress_test.sh --config presets/sglang-glm4-rocm.yaml --loops 5
+# Result: 5 loops
+```
 
-| Preset | Description |
-|--------|-------------|
-| `sglang-glm4-rocm.yaml` | GLM-4.7-FP8 on AMD MI300X with SGLang |
-| `vllm-llama-rocm.yaml` | Llama-3.1-8B on AMD GPUs with vLLM |
-| `vllm-qwen-cuda.yaml` | Qwen2.5-7B on NVIDIA GPUs with vLLM |
-| `sglang-qwen-cuda.yaml` | Qwen2.5-7B on NVIDIA GPUs with SGLang |
+### Example: Environment Variable Overrides Preset
+
+```bash
+# Preset has num_loops: 20, but env var overrides it
+STRESS_LOOPS=10 ./stress_test.sh --config presets/sglang-glm4-rocm.yaml
+# Result: 10 loops
+```
+
+### Example: CLI Beats Environment Variable
+
+```bash
+# Both env var and CLI specified - CLI wins
+STRESS_LOOPS=10 ./stress_test.sh --config presets/sglang-glm4-rocm.yaml --loops 5
+# Result: 5 loops (CLI wins)
+```
+
+## Container Environment Variables (Different!)
+
+**Important:** The `env:` section in the YAML config is passed to the **Docker container**, not the host script. These are completely separate from `STRESS_*` variables.
+
+```yaml
+# In preset file - these go INTO the container
+env:
+  SGLANG_USE_AITER: 1
+  HSA_NO_SCRATCH_RECLAIM: 1
+```
+
+```bash
+# This sets SGLANG_USE_AITER on the HOST, NOT in the container
+SGLANG_USE_AITER=0 ./stress_test.sh --config presets/sglang-glm4-rocm.yaml
+# Container still gets SGLANG_USE_AITER=1 from the preset!
+```
+
+**To change container environment variables**, you must either:
+1. Edit the preset file directly
+2. Create a new preset with different values
+
+| Variable Type | Scope | Example |
+|---------------|-------|---------|
+| `STRESS_*` | Controls the stress test script | `STRESS_LOOPS=10` |
+| `env:` in YAML | Passed to Docker container | `SGLANG_USE_AITER: 1` |
+
+## Script Environment Variables (STRESS_*)
+
+These control the stress test script itself:
+
+| Variable | Overrides |
+|----------|-----------|
+| `STRESS_LOOPS` | `test.num_loops` |
+| `STRESS_IMAGE` | `docker.image` |
+| `STRESS_PORT` | `server.port` |
+| `STRESS_FRAMEWORK` | `framework` |
+| `STRESS_MODE` | `test.mode` |
+
+```bash
+# Override loops and mode via environment
+STRESS_LOOPS=50 STRESS_MODE=server ./stress_test.sh --config presets/sglang-glm4-rocm.yaml
+```
 
 ## Adding New Frameworks
 
@@ -146,15 +249,16 @@ Create a plugin file in `plugins/` implementing these functions:
 ```bash
 # plugins/myframework.plugin.sh
 
-build_server_cmd()      # Build the server launch command
-get_health_endpoint()   # Return health check URL path
-get_chat_endpoint()     # Return chat completions URL path
-build_chat_payload()    # Build the prompt JSON payload
-parse_chat_response()   # Extract content from API response
-get_docker_entrypoint() # Return entrypoint override (optional)
+build_server_cmd()         # Build the server launch command
+get_health_endpoint()      # Return health check URL path
+get_chat_endpoint()        # Return chat completions URL path
+build_chat_payload()       # Build the prompt JSON payload
+parse_chat_response()      # Extract content from API response
+get_docker_entrypoint()    # Return entrypoint override (optional)
+get_server_process_pattern() # Return regex for pgrep/pkill (for server mode)
 ```
 
-Then set `framework: myframework` in your config.
+Then set `framework: myframework` in your preset.
 
 ## Output
 
@@ -189,15 +293,11 @@ Otherwise, it's marked **FAIL**.
 ```
 n-run-stability/
 ├── stress_test.sh           # Main runner (framework-agnostic)
-├── config.yaml              # Primary configuration
 ├── prompts.json             # Test prompts
 ├── plugins/
 │   ├── sglang.plugin.sh     # SGLang framework plugin
 │   └── vllm.plugin.sh       # vLLM framework plugin
 ├── presets/
-│   ├── sglang-glm4-rocm.yaml
-│   ├── vllm-llama-rocm.yaml
-│   ├── vllm-qwen-cuda.yaml
-│   └── sglang-qwen-cuda.yaml
+│   └── sglang-glm4-rocm.yaml  # Example preset (create your own!)
 └── README.md
 ```

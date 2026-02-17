@@ -100,6 +100,13 @@ get_docker_entrypoint() {
     echo ""  # SGLang images typically don't need entrypoint override
 }
 
+# Get the process pattern for identifying the server process
+# Used by server mode to stop/check the server without killing the container
+# Returns: Regex pattern for pgrep/pkill -f
+get_server_process_pattern() {
+    echo "sglang.launch_server|python.*-m sglang"
+}
+
 # Get any required volume mounts specific to this framework
 # Returns: Space-separated list of -v mount flags
 get_extra_mounts() {
