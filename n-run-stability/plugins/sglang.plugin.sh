@@ -52,16 +52,28 @@ build_chat_payload() {
     local model="$1"
     local prompt_content="$2"
     local default_params_json="$3"
-    local extra_params_json="${4:-{}}"
+    local extra_params_json="$4"
+    [ -z "$extra_params_json" ] && extra_params_json='{}'
     
-    python3 -c "
+    # Use jq if available (fastest, handles all escaping properly)
+    if command -v jq &>/dev/null; then
+        jq -n \
+            --arg model "$model" \
+            --arg content "$prompt_content" \
+            --argjson default_params "$default_params_json" \
+            --argjson extra_params "$extra_params_json" \
+            '{model: $model, messages: [{role: "user", content: $content}]} + $default_params + $extra_params'
+    else
+        # Fallback: use Python with stdin to avoid shell escaping issues
+        printf '%s\n%s\n%s\n%s\n' "$model" "$prompt_content" "$default_params_json" "$extra_params_json" | python3 -c "
 import json
 import sys
 
-model = sys.argv[1]
-content = sys.argv[2]
-default_params = json.loads(sys.argv[3])
-extra_params = json.loads(sys.argv[4])
+lines = sys.stdin.read().split('\n')
+model = lines[0]
+content = lines[1]
+default_params = json.loads(lines[2]) if lines[2] else {}
+extra_params = json.loads(lines[3]) if lines[3] else {}
 
 payload = {
     'model': model,
@@ -71,7 +83,8 @@ payload = {
 }
 
 print(json.dumps(payload))
-" "$model" "$prompt_content" "$default_params_json" "$extra_params_json"
+"
+    fi
 }
 
 # Parse the response from chat completions endpoint
@@ -81,17 +94,29 @@ print(json.dumps(payload))
 parse_chat_response() {
     local response="$1"
     
-    python3 -c "
-import sys
+    # Use jq if available (fastest)
+    if command -v jq &>/dev/null; then
+        local content
+        content=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+        if [ -n "$content" ]; then
+            echo "$content"
+        else
+            echo "PARSE_ERROR: $(echo "$response" | jq -r '.message // .error // "unknown error"' 2>/dev/null)"
+        fi
+    else
+        # Fallback: use Python with stdin
+        echo "$response" | python3 -c "
 import json
+import sys
 
 try:
-    d = json.loads(sys.argv[1])
+    d = json.load(sys.stdin)
     content = d['choices'][0]['message']['content']
     print(content)
 except Exception as e:
     print(f'PARSE_ERROR: {e}')
-" "$response"
+"
+    fi
 }
 
 # Get default Docker entrypoint override (if needed)
